@@ -10,6 +10,7 @@
 //FSM state -------------------------------------------------
 #define MAINSTATE_IDLE              0
 #define MAINSTATE_TX                1
+#define MAINSTATE_ACK               2
 
 //GLOBAL variables (DO NOT TOUCH!) ------------------------------------------
 //serial port interface
@@ -37,6 +38,66 @@ uint8_t seqNum = 0;     //ARQ sequence number
 uint8_t retxCnt = 0;    //ARQ retransmission counter
 uint8_t arqAck[5];      //ARQ ACK PDU
 
+void bit_repeat(uint8_t* send, uint8_t idx, uint8_t c){
+    uint32_t repeat_c = 0;
+    for(int i = 7; i >= 0; i--){
+        repeat_c = repeat_c <<3;
+        // 1bit -> 3bit repetition code
+        if(((c & (1 << i)) >> i)==1)
+        {
+            repeat_c = repeat_c | 0x7;
+        }
+        else
+        {
+            repeat_c = repeat_c | 0x0;
+        }
+    }
+    send[idx]   = (repeat_c & 0x00FF0000) >> 16;
+    send[idx+1] = (repeat_c & 0x0000FF00) >> 8;
+    send[idx+2] = repeat_c & 0x000000FF;
+}
+
+uint8_t* FEC(uint8_t* send){
+    
+    uint32_t buf = 0x00000000;
+    printf("buf = %u \n", buf);
+    buf |= ((send[0] << 16) & 0x00FF0000) ;
+    printf("buf = %u \n", buf);
+    buf |= (send[1] << 8) & 0x0000FF00;
+    printf("buf = %u \n", buf);
+    buf |= (send[2]) & 0x000000FF;
+    
+    printf("buf = %u \n", buf);
+
+    uint32_t result = 0x00000000;
+    
+    // for (int i = 0; i < 9; i++) {
+    //     result |= ((buf & (0x00000001 << (i * 3))) >> (i * 2));
+    // }
+    for (int i = 0; i < 8; i++){
+        int bit1 = (int)(buf & 0x000000001  << (i * 3));
+        int bit2 = (int)(buf & 0x000000001  << ((i * 3) + 1));
+        int bit3 = (int)(buf & 0x000000001  << ((i * 3) + 2));
+        if(bit1+bit2+bit3 >= 2){
+            result |= (0x000000001 << i);
+        }
+        else{
+            result |= (0x00000000 << i);
+        }
+    }
+    
+
+    uint8_t* message;
+    *message = (uint8_t)(result & 0xFF);
+    
+    printf("message = %c \n",message[0]);
+    
+    return message;
+
+
+}
+    
+    
 
 //application event handler : generating SDU from keyboard input
 void arqMain_processInputWord(void)
@@ -45,26 +106,11 @@ void arqMain_processInputWord(void)
     if (main_state == MAINSTATE_IDLE &&
         !arqEvent_checkEventFlag(arqEvent_dataToSend))
     {
-        if (c == '\n' || c == '\r')
-        {
-            originalWord[wordLen++] = '\0';
-            arqEvent_setEventFlag(arqEvent_dataToSend);
-            pc.printf("word is ready! ::: %s\n", originalWord);
-        }
-        else
-        {
-            originalWord[wordLen++] = c;
-            if (wordLen >= ARQMSG_MAXDATASIZE-1)
-            {
-                originalWord[wordLen++] = '\0';
-                arqEvent_setEventFlag(arqEvent_dataToSend);
-                pc.printf("\n max reached! word forced to be ready :::: %s\n", originalWord);
-            }
-        }
+        originalWord[wordLen++] = c;
+        arqEvent_setEventFlag(arqEvent_dataToSend);
+        pc.printf("word is ready! ::: %s\n", originalWord);
     }
 }
-
-
 
 
 //FSM operation implementation ------------------------------------------------
@@ -87,8 +133,6 @@ int main(void){
 
     arqLLI_initLowLayer(endNode_ID);
     pc.attach(&arqMain_processInputWord, Serial::RxIrq);
-
-
 
 
 
@@ -116,17 +160,36 @@ int main(void){
 
                     pc.printf("\n -------------------------------------------------\nRCVD from %i : %s (length:%i, seq:%i)\n -------------------------------------------------\n", 
                                 srcId, arqMsg_getWord(dataPtr), size, arqMsg_getSeq(dataPtr));
+                    
+                    for(int i = 0; i < 3; i++) {
+                        for(int j = 7; j >= 0; j--) {
+                            pc.printf("%d", (dataPtr[i+2] >> j) & 1);
+                        }
+                    }
+                    pc.printf("\n");
 
-                    main_state = MAINSTATE_IDLE;
+                    //ACK transmission
+                    arqMsg_encodeAck(arqAck, arqMsg_getSeq(dataPtr));
+                    arqLLI_sendData(arqAck, ARQMSG_ACKSIZE, srcId);
+
+                    main_state = MAINSTATE_TX; //goto TX state
                     flag_needPrint = 1;
 
                     arqEvent_clearEventFlag(arqEvent_dataRcvd);
                 }
                 else if (arqEvent_checkEventFlag(arqEvent_dataToSend)) //if data needs to be sent (keyboard input)
                 {
+                    uint8_t sendWord[3] = {0,0,0};
+                    bit_repeat(sendWord, 0, originalWord[0]);
+
                     //msg header setting
-                    pduSize = arqMsg_encodeData(arqPdu, originalWord, seqNum, wordLen);
+                    pduSize = arqMsg_encodeData(arqPdu, sendWord, seqNum, wordLen*3);
                     arqLLI_sendData(arqPdu, pduSize, dest_ID);
+
+                    
+                    //Setting ARQ parameter 
+                    seqNum = (seqNum + 1)%ARQMSSG_MAX_SEQNUM;
+                    retxCnt = 0;
 
                     pc.printf("[MAIN] sending to %i (seq:%i)\n", dest_ID, (seqNum-1)%ARQMSSG_MAX_SEQNUM);
 
@@ -136,6 +199,27 @@ int main(void){
                     wordLen = 0;
                     arqEvent_clearEventFlag(arqEvent_dataToSend);
                 }
+                //ignore events (arqEvent_dataTxDone, arqEvent_ackTxDone, arqEvent_ackRcvd, arqEvent_arqTimeout)
+                else if (arqEvent_checkEventFlag(arqEvent_dataTxDone)) //if data needs to be sent (keyboard input)
+                {
+                    pc.printf("[WARNING] cannot happen in IDLE state (event %i)\n", arqEvent_dataTxDone);
+                    arqEvent_clearEventFlag(arqEvent_dataTxDone);
+                }
+                else if (arqEvent_checkEventFlag(arqEvent_ackTxDone)) //if data needs to be sent (keyboard input)
+                {
+                    pc.printf("[WARNING] cannot happen in IDLE state (event %i)\n", arqEvent_ackTxDone);
+                    arqEvent_clearEventFlag(arqEvent_ackTxDone);
+                }
+                else if (arqEvent_checkEventFlag(arqEvent_dataTxDone)) //if data needs to be sent (keyboard input)
+                {
+                    pc.printf("[WARNING] cannot happen in IDLE state (event %i)\n", arqEvent_ackRcvd);
+                    arqEvent_clearEventFlag(arqEvent_ackRcvd);
+                }
+                else if (arqEvent_checkEventFlag(arqEvent_arqTimeout)) //if data needs to be sent (keyboard input)
+                {
+                    pc.printf("[WARNING] cannot happen in IDLE state (event %i)\n", arqEvent_arqTimeout);
+                    arqEvent_clearEventFlag(arqEvent_arqTimeout);
+                }
                 else if (flag_needPrint == 1)
                 {
                     pc.printf("Give a word to send : ");
@@ -144,12 +228,87 @@ int main(void){
 
                 break;
 
-            case MAINSTATE_TX: //IDLE state description
+            case MAINSTATE_TX: //TX state description
 
-                if (arqEvent_checkEventFlag(arqEvent_dataTxDone)) //data TX finished
+                if (arqEvent_checkEventFlag(arqEvent_ackTxDone)) //data TX finished
                 {
-                    main_state = MAINSTATE_IDLE;
+                    if (arqTimer_getTimerStatus() == 1 ||
+                        arqEvent_checkEventFlag(arqEvent_arqTimeout))
+                    {
+                        main_state = MAINSTATE_ACK;
+                    }
+                    else
+                    {
+                        main_state = MAINSTATE_IDLE;
+                    }
+
+                    arqEvent_clearEventFlag(arqEvent_ackTxDone);
+                }
+                else if (arqEvent_checkEventFlag(arqEvent_dataTxDone)) //data TX finished
+                {
+                    main_state = MAINSTATE_ACK;
+                    arqTimer_startTimer(); //start ARQ timer for retransmission
+
                     arqEvent_clearEventFlag(arqEvent_dataTxDone);
+                }
+
+                break;
+            case MAINSTATE_ACK: //ACK state description
+
+                if (arqEvent_checkEventFlag(arqEvent_ackRcvd)) //data TX finished
+                {
+                    uint8_t* dataPtr = arqLLI_getRcvdDataPtr();
+                    if ( arqMsg_getSeq(arqPdu) == arqMsg_getSeq(dataPtr) )
+                    {
+                        pc.printf("ACK is correctly received! \n");
+                        arqTimer_stopTimer();
+                        main_state = MAINSTATE_IDLE;
+                    }
+                    else
+                    {
+                        pc.printf("ACK seq number is weird! (expected : %i, received : %i\n", arqMsg_getSeq(arqPdu),arqMsg_getSeq(dataPtr));
+                    }
+
+                    arqEvent_clearEventFlag(arqEvent_ackRcvd);
+                }
+                else if (arqEvent_checkEventFlag(arqEvent_arqTimeout)) //data TX finished
+                {
+
+                    pc.printf("timeout! retransmit\n");
+                    arqLLI_sendData(arqPdu, pduSize, dest_ID);
+                    //Setting ARQ parameter 
+                    retxCnt += 1;
+                    main_state = MAINSTATE_TX;
+
+                    arqEvent_clearEventFlag(arqEvent_arqTimeout);
+                }
+                else if (arqEvent_checkEventFlag(arqEvent_dataRcvd)) //data TX finished
+                {
+                    //Retrieving data info.
+                    uint8_t srcId = arqLLI_getSrcId();
+                    uint8_t* dataPtr = arqLLI_getRcvdDataPtr();
+                    uint8_t size = arqLLI_getSize();
+
+                    pc.printf("\n -------------------------------------------------\nRCVD from %i : %s (length:%i, seq:%i)\n -------------------------------------------------\n", 
+                                srcId, arqMsg_getWord(dataPtr), size, arqMsg_getSeq(dataPtr));
+
+                    //ACK transmission
+                    arqMsg_encodeAck(arqAck, arqMsg_getSeq(dataPtr));
+                    arqLLI_sendData(arqAck, ARQMSG_ACKSIZE, srcId);
+
+                    main_state = MAINSTATE_TX; //goto TX state
+
+                    arqEvent_clearEventFlag(arqEvent_dataRcvd);
+                }
+                else if (arqEvent_checkEventFlag(arqEvent_dataTxDone)) //data TX finished
+                {
+                    pc.printf("[WARNING] cannot happen in ACK state (event %i)\n", arqEvent_dataTxDone);
+                    arqEvent_clearEventFlag(arqEvent_dataTxDone);
+                }
+                else if (arqEvent_checkEventFlag(arqEvent_ackTxDone)) //data TX finished
+                {
+                    pc.printf("[WARNING] cannot happen in ACK state (event %i)\n", arqEvent_ackTxDone);
+                    arqEvent_clearEventFlag(arqEvent_ackTxDone);
                 }
 
                 break;
