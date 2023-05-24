@@ -75,14 +75,26 @@ uint8_t* FEC(uint8_t* send){
     //     result |= ((buf & (0x00000001 << (i * 3))) >> (i * 2));
     // }
     for (int i = 0; i < 8; i++){
-        int bit1 = (int)(buf & 0x000000001  << (i * 3));
-        int bit2 = (int)(buf & 0x000000001  << ((i * 3) + 1));
-        int bit3 = (int)(buf & 0x000000001  << ((i * 3) + 2));
-        if(bit1+bit2+bit3 >= 2){
-            result |= (0x000000001 << i);
+        int bit[3];
+        int cnt1 = 0;
+        int cnt0 = 0;
+        bit[0] = (int)((buf & 0x000000001  << (i * 3)) >> (i *3));
+        bit[1] = (int)((buf & 0x000000001  << ((i * 3) + 1)) >> (i * 3) + 1);
+        bit[2] = (int)((buf & 0x000000001  << ((i * 3) + 2)) >> (i * 3)+ 2);
+            for(int j = 0; j < 3; j++){
+                if (bit[0] == 1){
+                    cnt1++;
+                }
+                else {
+                    cnt0++;
+                }
+                
+            }
+        if (cnt1 > cnt0){
+            result |= 0x00000001 << i;
         }
         else{
-            result |= (0x00000000 << i);
+            result |= 0x00000000;
         }
     }
     
