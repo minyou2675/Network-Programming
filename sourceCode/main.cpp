@@ -98,11 +98,11 @@ uint8_t* FEC(uint8_t* send){
         }
     }
     
-
-    uint8_t* message;
-    *message = (uint8_t)(result & 0xFF);
+    uint8_t idx = 0;
+    uint8_t message[0];
+    message[idx++] = (char)result & 0xFF;
     
-    printf("message = %c \n",message[0]);
+    printf("message = %s \n",message);
     
     return message;
 
