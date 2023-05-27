@@ -57,19 +57,19 @@ void bit_repeat(uint8_t* send, uint8_t idx, uint8_t c){
     send[idx+2] = repeat_c & 0x000000FF;
 }
 
-uint8_t* FEC(uint8_t* send){
+void FEC(uint8_t* msgPtr,uint8_t* result){
     
     uint32_t buf = 0x00000000;
-    printf("buf = %u \n", buf);
-    buf |= ((send[0] << 16) & 0x00FF0000) ;
-    printf("buf = %u \n", buf);
-    buf |= (send[1] << 8) & 0x0000FF00;
-    printf("buf = %u \n", buf);
-    buf |= (send[2]) & 0x000000FF;
-    
-    printf("buf = %u \n", buf);
 
-    uint32_t result = 0x00000000;
+    buf |= ((msgPtr[ARQMSG_OFFSET_DATA] << 16) & 0x00FF0000) ;
+ 
+    buf |= (msgPtr[ARQMSG_OFFSET_DATA + 1] << 8) & 0x0000FF00;
+    
+    buf |= (msgPtr[ARQMSG_OFFSET_DATA + 2]) & 0x000000FF;
+    
+   
+
+    
     
     // for (int i = 0; i < 9; i++) {
     //     result |= ((buf & (0x00000001 << (i * 3))) >> (i * 2));
@@ -78,36 +78,25 @@ uint8_t* FEC(uint8_t* send){
         int bit[3];
         int cnt1 = 0;
         int cnt0 = 0;
-        bit[0] = (int)((buf & 0x000000001  << (i * 3)) >> (i *3));
-        bit[1] = (int)((buf & 0x000000001  << ((i * 3) + 1)) >> (i * 3) + 1);
-        bit[2] = (int)((buf & 0x000000001  << ((i * 3) + 2)) >> (i * 3)+ 2);
-            for(int j = 0; j < 3; j++){
-                if (bit[0] == 1){
-                    cnt1++;
-                }
-                else {
-                    cnt0++;
-                }
-                
+        bit[0] = (int)((buf & (0x00000001 << (i * 3))) >> (i * 3));
+        bit[1] = (int)((buf & (0x00000001 << ((i * 3) + 1))) >> ((i * 3) + 1));
+        bit[2] = (int)((buf & (0x00000001 << ((i * 3) + 2))) >> ((i * 3) + 2));
+        for (int j = 0; j < 3; j++) {
+            if (bit[j] == 1) {
+                cnt1++;
+            } else {
+                cnt0++;
             }
-        if (cnt1 > cnt0){
-            result |= 0x00000001 << i;
         }
-        else{
-            result |= 0x00000000;
+        if (cnt1 > cnt0) {
+            result[0] |= 0x00000001 << i;
+        } else {
+            result[0] |= 0x00000000 << i;
         }
     }
-    
-    uint8_t idx = 0;
-    uint8_t message[0];
-    message[idx++] = (char)result & 0xFF;
-    
-    printf("message = %s \n",message);
-    
-    return message;
-
-
-}
+         
+       
+    }
     
     
 
@@ -169,9 +158,12 @@ int main(void){
                     uint8_t srcId = arqLLI_getSrcId();
                     uint8_t* dataPtr = arqLLI_getRcvdDataPtr();
                     uint8_t size = arqLLI_getSize();
+                    uint8_t* msgPtr = arqMsg_getWord(dataPtr);
+                    uint8_t result[200];
+                    FEC(dataPtr, result);
 
                     pc.printf("\n -------------------------------------------------\nRCVD from %i : %s (length:%i, seq:%i)\n -------------------------------------------------\n", 
-                                srcId, arqMsg_getWord(dataPtr), size, arqMsg_getSeq(dataPtr));
+                                srcId, result, size, arqMsg_getSeq(dataPtr));
                     
                     for(int i = 0; i < 3; i++) {
                         for(int j = 7; j >= 0; j--) {
@@ -300,9 +292,12 @@ int main(void){
                     uint8_t srcId = arqLLI_getSrcId();
                     uint8_t* dataPtr = arqLLI_getRcvdDataPtr();
                     uint8_t size = arqLLI_getSize();
+                    uint8_t* msgPtr = arqMsg_getWord(dataPtr);
+                    uint8_t result[200];
+                    FEC(dataPtr, result);
 
                     pc.printf("\n -------------------------------------------------\nRCVD from %i : %s (length:%i, seq:%i)\n -------------------------------------------------\n", 
-                                srcId, arqMsg_getWord(dataPtr), size, arqMsg_getSeq(dataPtr));
+                                srcId, result , size, arqMsg_getSeq(dataPtr));
 
                     //ACK transmission
                     arqMsg_encodeAck(arqAck, arqMsg_getSeq(dataPtr));
